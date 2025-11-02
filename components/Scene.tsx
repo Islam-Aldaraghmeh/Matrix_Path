@@ -33,6 +33,7 @@ interface SceneProps {
    fadingPathStyle: FadingPathStyle;
    showStartMarkers: boolean;
    showEndMarkers: boolean;
+   dynamicFadingPath: boolean;
 }
 
 const Scene: React.FC<SceneProps> = React.memo(({
@@ -43,7 +44,8 @@ const Scene: React.FC<SceneProps> = React.memo(({
     fadingPathLength,
     fadingPathStyle,
     showStartMarkers,
-    showEndMarkers
+    showEndMarkers,
+    dynamicFadingPath
 }) => {
     const prevSceneDataRef = useRef<SceneProps['sceneData']>(sceneData);
     const prevWallsRef = useRef<Wall[]>(walls);
@@ -202,6 +204,7 @@ const Scene: React.FC<SceneProps> = React.memo(({
                         fading={fadingPath}
                         maxLength={fadingPathLength}
                         style={fadingPathStyle}
+                        dynamic={dynamicFadingPath}
                     />
                 </React.Fragment>
             ))}

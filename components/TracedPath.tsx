@@ -8,6 +8,7 @@ interface TracedPathProps {
     fading: boolean;
     maxLength: number;
     style: 'smooth' | 'dots';
+    dynamic?: boolean;
 }
 
 const DEFAULT_TRAIL_LIMIT = 120;

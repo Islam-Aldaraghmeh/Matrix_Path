@@ -48,6 +48,7 @@ interface WallContact {
 }
 
 type Eigenvalue = { re: number; im: number };
+type TrailSample = { position: THREE.Vector3; timestamp: number; index: number };
 export type FadingPathStyle = 'smooth' | 'dots';
 
 const mapEigenvalues = (
@@ -93,6 +94,7 @@ function App() {
     const [fadingPathStyle, setFadingPathStyle] = useState<FadingPathStyle>('smooth');
     const [showStartMarkers, setShowStartMarkers] = useState<boolean>(true);
     const [showEndMarkers, setShowEndMarkers] = useState<boolean>(true);
+    const [dynamicFadingPath, setDynamicFadingPath] = useState<boolean>(false);
     const [selectedPresetName, setSelectedPresetName] = useState(PRESET_MATRICES[0].name);
     const [matrixScalar, setMatrixScalar] = useState<number>(1);
     const [matrixExponent, setMatrixExponent] = useState<number>(1);
@@ -112,6 +114,9 @@ function App() {
     const animationFrameRef = useRef<number | null>(null);
     const animationStartRef = useRef<number | null>(null);
     const animationDirectionRef = useRef<1 | -1>(1);
+    const previousTRef = useRef<number>(t);
+    const dynamicTrailPointsRef = useRef<Map<number, TrailSample[]>>(new Map());
+    const previousSampleIndexRef = useRef<Map<number, number>>(new Map());
 
     // Activation function state
     const [activation, setActivation] = useState<{
@@ -155,6 +160,13 @@ function App() {
         stopAnimation();
         setT(animationConfig.startT);
     }, [stopAnimation, animationConfig.startT]);
+
+    useEffect(() => {
+        if (!fadingPath || !dynamicFadingPath) {
+            dynamicTrailPointsRef.current.clear();
+            previousSampleIndexRef.current.clear();
+        }
+    }, [fadingPath, dynamicFadingPath]);
 
 
     // Animation Loop
@@ -516,6 +528,11 @@ function App() {
         if (!vectorTransformations) return [];
         const range = animationConfig.endT - animationConfig.startT;
         if (range <= 0) return [];
+
+        const prevT = previousTRef.current;
+        const isReversing = t < prevT;
+        const deltaT = Math.abs(t - prevT);
+        previousTRef.current = t;
         const axisAccess = {
             x: (vec: THREE.Vector3) => vec.x,
             y: (vec: THREE.Vector3) => vec.y,
@@ -576,13 +593,92 @@ function App() {
             return null;
         };
         
+        const direction = isReversing ? -1 : 1;
+
+        if (dynamicFadingPath && fadingPath) {
+            const visibleIds = new Set(vectors.filter(v => v.visible).map(v => v.id));
+            dynamicTrailPointsRef.current.forEach((_, key) => {
+                if (!visibleIds.has(key)) {
+                    dynamicTrailPointsRef.current.delete(key);
+                    previousSampleIndexRef.current.delete(key);
+                }
+            });
+        }
+
         return vectors
             .filter(v => v.visible)
             .map(vector => {
                 const transform = vectorTransformations[vector.id];
                 const progress = (t - animationConfig.startT) / range;
                 const sliceEnd = Math.floor(progress * (transform.fullPath.length - 1));
-                const currentPath = transform.fullPath.slice(0, sliceEnd + 1);
+                const clampedIndex = THREE.MathUtils.clamp(sliceEnd, 0, transform.fullPath.length - 1);
+                const maxTrail = Math.min(fadingPathLength, transform.fullPath.length);
+
+                let currentPath: THREE.Vector3[];
+                if (dynamicFadingPath && fadingPath) {
+                    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+                    const maxSamples = Math.max(2, Math.min(maxTrail, Math.round(Math.max(2, fadingPathLength))));
+                    const windowMs = THREE.MathUtils.lerp(450, 6500, THREE.MathUtils.clamp(fadingPathLength / 400, 0, 1));
+
+                    let samples = dynamicTrailPointsRef.current.get(vector.id) ?? [];
+                    let prevIndexStored = previousSampleIndexRef.current.get(vector.id);
+
+                    const pushSample = (index: number, timestamp: number) => {
+                        const point = transform.fullPath[index];
+                        if (!point) return;
+                        samples.push({ position: point.clone(), timestamp, index });
+                    };
+
+                    if (prevIndexStored === undefined || prevIndexStored < 0 || prevIndexStored >= transform.fullPath.length) {
+                        samples = [];
+                        prevIndexStored = clampedIndex;
+                    }
+
+                    const lastSample = samples[samples.length - 1];
+                    const step = prevIndexStored < clampedIndex ? 1 : -1;
+                    const forward = step === 1;
+                    const missingForward = forward
+                        ? prevIndexStored !== undefined && prevIndexStored > clampedIndex
+                        : prevIndexStored !== undefined && prevIndexStored < clampedIndex;
+                    const shouldReset = missingForward || Math.abs(prevIndexStored - clampedIndex) > maxSamples * 2;
+
+                    if (shouldReset) {
+                        samples = [];
+                        prevIndexStored = forward ? Math.max(0, clampedIndex - 1) : Math.min(transform.fullPath.length - 1, clampedIndex + 1);
+                    }
+
+                    if (prevIndexStored === undefined) {
+                        pushSample(clampedIndex, now);
+                    } else if (prevIndexStored !== clampedIndex) {
+                        const fillStep = prevIndexStored < clampedIndex ? 1 : -1;
+                        for (let idx = prevIndexStored + fillStep; idx !== clampedIndex + fillStep; idx += fillStep) {
+                            pushSample(idx, now);
+                        }
+                    } else if (!lastSample || now - lastSample.timestamp > 120) {
+                        pushSample(clampedIndex, now);
+                    }
+
+                    previousSampleIndexRef.current.set(vector.id, clampedIndex);
+
+                    samples = samples.filter(sample => now - sample.timestamp <= windowMs);
+
+                    if (samples.length === 0) {
+                        pushSample(clampedIndex, now);
+                    }
+
+                    if (samples.length > maxSamples) {
+                        samples = samples.slice(samples.length - maxSamples);
+                    }
+
+                    dynamicTrailPointsRef.current.set(vector.id, samples);
+
+                    currentPath = samples.map(sample => sample.position.clone());
+                } else {
+                    previousSampleIndexRef.current.set(vector.id, clampedIndex);
+                    dynamicTrailPointsRef.current.delete(vector.id);
+                    const start = Math.max(0, clampedIndex - maxTrail + 1);
+                    currentPath = transform.fullPath.slice(start, clampedIndex + 1);
+                }
                 const interpolatedVector = currentPath[currentPath.length - 1] || transform.initial;
                 const previousVector = currentPath.length > 1 ? currentPath[currentPath.length - 2] : transform.initial;
 
@@ -604,7 +700,7 @@ function App() {
                     contacts,
                 };
             });
-    }, [t, vectors, vectorTransformations, animationConfig.startT, animationConfig.endT, walls]);
+    }, [t, vectors, vectorTransformations, animationConfig.startT, animationConfig.endT, walls, fadingPath, dynamicFadingPath, fadingPathLength]);
 
     const wallContactCounts = useMemo(() => {
         const counts: Record<number, number> = {};
@@ -671,6 +767,7 @@ function App() {
                 fadingPathStyle={fadingPathStyle}
                 showStartMarkers={showStartMarkers}
                 showEndMarkers={showEndMarkers}
+                dynamicFadingPath={dynamicFadingPath}
                 isPlaying={isPlaying}
                 animationConfig={animationConfig}
                 repeatAnimation={repeatAnimation}
@@ -699,6 +796,7 @@ function App() {
                 onFadingPathToggle={setFadingPath}
                 onFadingPathLengthChange={handleFadingPathLengthChange}
                 onFadingPathStyleChange={setFadingPathStyle}
+                onDynamicFadingPathChange={setDynamicFadingPath}
                 onShowStartMarkersChange={setShowStartMarkers}
                 onShowEndMarkersChange={setShowEndMarkers}
                 onResetTime={resetTime}
@@ -722,6 +820,7 @@ function App() {
                         fadingPathStyle={fadingPathStyle}
                         showStartMarkers={showStartMarkers}
                         showEndMarkers={showEndMarkers}
+                        dynamicFadingPath={dynamicFadingPath}
                     />
                  </div>
                  <InfoPanel

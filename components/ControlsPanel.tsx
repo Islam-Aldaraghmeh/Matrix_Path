@@ -32,6 +32,7 @@ interface ControlsPanelProps {
     fadingPathStyle: FadingPathStyle;
     showStartMarkers: boolean;
     showEndMarkers: boolean;
+    dynamicFadingPath: boolean;
     isPlaying: boolean;
     animationConfig: AnimationConfig;
     repeatAnimation: boolean;
@@ -62,6 +63,7 @@ interface ControlsPanelProps {
     onFadingPathStyleChange: (style: FadingPathStyle) => void;
     onShowStartMarkersChange: (enabled: boolean) => void;
     onShowEndMarkersChange: (enabled: boolean) => void;
+    onDynamicFadingPathChange: (enabled: boolean) => void;
     onResetTime: () => void;
     onPlayPause: () => void;
     onAnimationConfigChange: (config: AnimationConfig) => void;
@@ -165,6 +167,7 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
         fadingPathStyle,
         showStartMarkers,
         showEndMarkers,
+        dynamicFadingPath,
         isPlaying,
         animationConfig,
         repeatAnimation,
@@ -193,6 +196,7 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
         onFadingPathToggle,
         onFadingPathLengthChange,
         onFadingPathStyleChange,
+        onDynamicFadingPathChange,
         onShowStartMarkersChange,
         onShowEndMarkersChange,
         onResetTime,
@@ -362,6 +366,21 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
                                                 onChange={(e) => onFadingPathLengthChange(Math.max(2, Math.round(parseFloat(e.target.value))))}
                                                 className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-cyan-500 mt-2"
                                             />
+                                        </div>
+                                        <div className="flex items-center justify-between bg-gray-900/60 rounded-md px-3 py-2">
+                                            <div>
+                                                <label htmlFor="dynamicFadingToggle" className="font-medium text-gray-200">Dynamic</label>
+                                                <p className="text-xs text-gray-400 mt-1">Tail responds to real-time motion and fades when idle.</p>
+                                            </div>
+                                            <button
+                                                id="dynamicFadingToggle"
+                                                role="switch"
+                                                aria-checked={dynamicFadingPath}
+                                                onClick={() => onDynamicFadingPathChange(!dynamicFadingPath)}
+                                                className={`${dynamicFadingPath ? 'bg-cyan-500' : 'bg-gray-600'} relative inline-flex items-center h-6 rounded-full w-11 transition-colors focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-gray-800 focus:ring-cyan-500`}
+                                            >
+                                                <span className={`${dynamicFadingPath ? 'translate-x-6' : 'translate-x-1'} inline-block w-4 h-4 transform bg-white rounded-full transition-transform`}/>
+                                            </button>
                                         </div>
                                         <div>
                                             <span className="font-medium text-gray-200 block mb-2">Trail Style</span>
