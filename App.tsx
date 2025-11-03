@@ -8,7 +8,21 @@ import { createMatrixEvaluator, multiplyMatrixVector, interpolateEigenvalue } fr
 import { easingFunctions } from './utils/easing';
 import { activationFunctionMap, parseCustomActivation } from './utils/activationFunctions';
 import type { ActivationFunction } from './utils/activationFunctions';
-import type { Matrix3, Vector3, VectorObject, Wall } from './types';
+import type { Matrix3, Vector3, VectorObject, Wall, FadingPathStyle } from './types';
+import {
+    listProfiles,
+    loadProfile as loadStoredProfile,
+    saveProfile as persistProfile,
+    deleteProfile as removeStoredProfile,
+    loadLastSession,
+    saveLastSession,
+    loadLastUsedProfile,
+    saveLastUsedProfile,
+    getProfileVersion,
+    type ProfileData,
+    type ProfileSummary,
+    type ProfileOperationResult
+} from './utils/profileStorage';
 
 // --- CONSTANTS ---
 
@@ -49,8 +63,139 @@ interface WallContact {
 
 type Eigenvalue = { re: number; im: number };
 type TrailSample = { position: THREE.Vector3; timestamp: number; index: number };
-export type FadingPathStyle = 'smooth' | 'dots';
 
+const sanitizeNumber = (value: unknown, fallback: number): number => {
+    const parsed = typeof value === 'number' ? value : Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const sanitizeMatrix3 = (input: unknown, fallback: Matrix3 = INITIAL_MATRIX): Matrix3 => {
+    if (!Array.isArray(input)) return fallback;
+    const rows: Vector3[] = [];
+    for (let i = 0; i < 3; i++) {
+        const row = Array.isArray(input[i]) ? input[i] as unknown[] : [];
+        rows.push([
+            sanitizeNumber(row[0], fallback[i]?.[0] ?? 0),
+            sanitizeNumber(row[1], fallback[i]?.[1] ?? 0),
+            sanitizeNumber(row[2], fallback[i]?.[2] ?? 0),
+        ] as Vector3);
+    }
+    return rows as Matrix3;
+};
+
+const sanitizeVectors = (input: unknown, fallback: VectorObject[] = INITIAL_VECTORS): VectorObject[] => {
+    if (!Array.isArray(input)) return fallback;
+    const result: VectorObject[] = [];
+    let syntheticId = Date.now();
+    for (const entry of input) {
+        if (!entry || typeof entry !== 'object') continue;
+        const candidate = entry as Partial<VectorObject>;
+        const id = typeof candidate.id === 'number' && Number.isFinite(candidate.id)
+            ? candidate.id
+            : syntheticId++;
+        const valueSource = Array.isArray(candidate.value) ? candidate.value : [];
+        const value: Vector3 = [
+            sanitizeNumber(valueSource[0], 0),
+            sanitizeNumber(valueSource[1], 0),
+            sanitizeNumber(valueSource[2], 0),
+        ];
+        const visible = typeof candidate.visible === 'boolean' ? candidate.visible : true;
+        const color = typeof candidate.color === 'string' && candidate.color ? candidate.color : VECTOR_COLORS[id % VECTOR_COLORS.length] ?? '#ffffff';
+        result.push({ id, value, visible, color });
+    }
+    return result.length > 0 ? result : fallback;
+};
+
+const sanitizeWalls = (input: unknown): Wall[] => {
+    if (!Array.isArray(input)) return [];
+    const axes: Wall['axis'][] = ['x', 'y', 'z'];
+    const walls: Wall[] = [];
+    let syntheticId = Date.now();
+    for (const entry of input) {
+        if (!entry || typeof entry !== 'object') continue;
+        const candidate = entry as Partial<Wall>;
+        const axis = typeof candidate.axis === 'string' && axes.includes(candidate.axis as Wall['axis'])
+            ? candidate.axis as Wall['axis']
+            : null;
+        if (!axis) continue;
+        const position = sanitizeNumber(candidate.position, 0);
+        const id = typeof candidate.id === 'number' && Number.isFinite(candidate.id)
+            ? candidate.id
+            : syntheticId++;
+        walls.push({ id, axis, position });
+    }
+    return walls;
+};
+
+const sanitizeFadingStyle = (value: unknown): FadingPathStyle => {
+    return value === 'dots' ? 'dots' : 'smooth';
+};
+
+const sanitizeAnimationConfig = (input: unknown): { duration: number; startT: number; endT: number; easing: keyof typeof easingFunctions } => {
+    const base = {
+        duration: 5,
+        startT: 0,
+        endT: 2,
+        easing: 'easeInOutSine' as keyof typeof easingFunctions
+    };
+    if (!input || typeof input !== 'object') {
+        return base;
+    }
+    const candidate = input as Partial<{ duration: number; startT: number; endT: number; easing: string }>;
+    const duration = Math.max(0.1, sanitizeNumber(candidate.duration, base.duration));
+    const startT = sanitizeNumber(candidate.startT, base.startT);
+    const endT = sanitizeNumber(candidate.endT, base.endT);
+    const easing = typeof candidate.easing === 'string' && candidate.easing in easingFunctions
+        ? candidate.easing as keyof typeof easingFunctions
+        : base.easing;
+    const safeStart = Number.isFinite(startT) ? startT : base.startT;
+    const safeEnd = Number.isFinite(endT) ? Math.max(endT, safeStart) : Math.max(base.endT, safeStart);
+    return { duration, startT: safeStart, endT: safeEnd, easing };
+};
+
+const sanitizeActivation = (input: unknown): { name: string; customFnStr: string } => {
+    if (!input || typeof input !== 'object') {
+        return { name: 'identity', customFnStr: 'x' };
+    }
+    const candidate = input as Partial<{ name: string; customFnStr: string }>;
+    const name = typeof candidate.name === 'string' && candidate.name.length > 0 ? candidate.name : 'identity';
+    const customFnStr = typeof candidate.customFnStr === 'string' ? candidate.customFnStr : 'x';
+    return { name, customFnStr };
+};
+
+const sanitizeProfileData = (data: ProfileData | null): ProfileData | null => {
+    if (!data) return null;
+    const animationConfig = sanitizeAnimationConfig(data.animationConfig);
+    const activationConfig = sanitizeActivation(data.activation);
+    const ensureBoolean = (value: unknown, fallback: boolean) => typeof value === 'boolean' ? value : fallback;
+    const preciseT = sanitizeNumber(data.tPrecision, 0.01);
+    const safeT = sanitizeNumber(data.t, animationConfig.startT);
+    const clampedT = THREE.MathUtils.clamp(safeT, animationConfig.startT, animationConfig.endT);
+
+    return {
+        version: data.version ?? 1,
+        matrixA: sanitizeMatrix3(data.matrixA),
+        vectors: sanitizeVectors(data.vectors),
+        walls: sanitizeWalls(data.walls),
+        t: clampedT,
+        tPrecision: preciseT > 0 ? preciseT : 0.01,
+        dotMode: ensureBoolean(data.dotMode, false),
+        fadingPath: ensureBoolean(data.fadingPath, false),
+        fadingPathLength: Math.max(2, Math.round(sanitizeNumber(data.fadingPathLength, 120))),
+        fadingPathStyle: sanitizeFadingStyle(data.fadingPathStyle),
+        showStartMarkers: ensureBoolean(data.showStartMarkers, true),
+        showEndMarkers: ensureBoolean(data.showEndMarkers, true),
+        dynamicFadingPath: ensureBoolean(data.dynamicFadingPath, false),
+        animationConfig,
+        repeatAnimation: ensureBoolean(data.repeatAnimation, false),
+        activation: activationConfig,
+        selectedPresetName: typeof data.selectedPresetName === 'string' ? data.selectedPresetName : PRESET_MATRICES[0].name,
+        matrixScalar: sanitizeNumber(data.matrixScalar, 1),
+        matrixExponent: Math.max(1, Math.round(sanitizeNumber(data.matrixExponent, 1))),
+        normalizeMatrix: ensureBoolean(data.normalizeMatrix, false),
+        linearEigenInterpolation: ensureBoolean(data.linearEigenInterpolation, false)
+    };
+};
 const mapEigenvalues = (
     raw: (number | math.Complex)[] | math.Matrix | null | undefined
 ): Eigenvalue[] | null => {
@@ -101,6 +246,8 @@ function App() {
     const [normalizeMatrix, setNormalizeMatrix] = useState<boolean>(false);
     const [normalizationWarning, setNormalizationWarning] = useState<string | null>(null);
     const [linearEigenInterpolation, setLinearEigenInterpolation] = useState<boolean>(false);
+    const [profileSummaries, setProfileSummaries] = useState<ProfileSummary[]>([]);
+    const [activeProfileName, setActiveProfileName] = useState<string | null>(null);
 
     // Animation state
     const [isPlaying, setIsPlaying] = useState<boolean>(false);
@@ -343,6 +490,193 @@ function App() {
         const safeLength = Number.isFinite(length) ? Math.max(2, Math.min(600, Math.round(length))) : 120;
         setFadingPathLength(safeLength);
     }, []);
+
+    const profileSnapshot = useMemo<ProfileData>(() => {
+        const clonedMatrix = matrixA.map(row => [...row] as Vector3) as Matrix3;
+        const clonedVectors = vectors.map(vector => ({
+            ...vector,
+            value: [...vector.value] as Vector3
+        }));
+        const clonedWalls = walls.map(wall => ({ ...wall }));
+        return {
+            version: getProfileVersion(),
+            matrixA: clonedMatrix,
+            vectors: clonedVectors,
+            walls: clonedWalls,
+            t,
+            tPrecision,
+            dotMode,
+            fadingPath,
+            fadingPathLength,
+            fadingPathStyle,
+            showStartMarkers,
+            showEndMarkers,
+            dynamicFadingPath,
+            animationConfig: {
+                duration: animationConfig.duration,
+                startT: animationConfig.startT,
+                endT: animationConfig.endT,
+                easing: animationConfig.easing
+            },
+            repeatAnimation,
+            activation: {
+                name: activation.name,
+                customFnStr: activation.customFnStr
+            },
+            selectedPresetName,
+            matrixScalar,
+            matrixExponent,
+            normalizeMatrix,
+            linearEigenInterpolation
+        };
+    }, [
+        matrixA,
+        vectors,
+        walls,
+        t,
+        tPrecision,
+        dotMode,
+        fadingPath,
+        fadingPathLength,
+        fadingPathStyle,
+        showStartMarkers,
+        showEndMarkers,
+        dynamicFadingPath,
+        animationConfig.duration,
+        animationConfig.startT,
+        animationConfig.endT,
+        animationConfig.easing,
+        repeatAnimation,
+        activation.name,
+        activation.customFnStr,
+        selectedPresetName,
+        matrixScalar,
+        matrixExponent,
+        normalizeMatrix,
+        linearEigenInterpolation
+    ]);
+
+    const applyProfileData = useCallback((rawData: ProfileData | null) => {
+        const data = sanitizeProfileData(rawData);
+        if (!data) {
+            return;
+        }
+        stopAnimation();
+        setMatrixA(data.matrixA);
+        setVectors(data.vectors);
+        setWalls(data.walls);
+        handleMatrixScalarChange(data.matrixScalar);
+        handleMatrixExponentChange(data.matrixExponent);
+        setNormalizeMatrix(data.normalizeMatrix);
+        setLinearEigenInterpolation(data.linearEigenInterpolation);
+        setDotMode(data.dotMode);
+        setFadingPath(data.fadingPath);
+        handleFadingPathLengthChange(data.fadingPathLength);
+        setFadingPathStyle(data.fadingPathStyle);
+        setShowStartMarkers(data.showStartMarkers);
+        setShowEndMarkers(data.showEndMarkers);
+        setDynamicFadingPath(data.dynamicFadingPath);
+        setAnimationConfig({
+            duration: data.animationConfig.duration,
+            startT: data.animationConfig.startT,
+            endT: data.animationConfig.endT,
+            easing: data.animationConfig.easing
+        });
+        setRepeatAnimation(data.repeatAnimation);
+        setActivation(prev => ({
+            ...prev,
+            name: data.activation.name,
+            customFnStr: data.activation.customFnStr
+        }));
+        setSelectedPresetName(data.selectedPresetName);
+        setTPrecision(data.tPrecision);
+        setT(data.t);
+        setError(null);
+    }, [
+        stopAnimation,
+        handleMatrixScalarChange,
+        handleMatrixExponentChange,
+        handleFadingPathLengthChange
+    ]);
+
+    const refreshProfileSummaries = useCallback(() => {
+        setProfileSummaries(listProfiles());
+    }, []);
+
+    useEffect(() => {
+        refreshProfileSummaries();
+        const lastUsed = loadLastUsedProfile();
+        if (lastUsed) {
+            const stored = loadStoredProfile(lastUsed);
+            if (stored) {
+                applyProfileData(stored);
+                setActiveProfileName(lastUsed);
+                return;
+            }
+        }
+        const lastSession = loadLastSession();
+        if (lastSession) {
+            applyProfileData(lastSession);
+            setActiveProfileName(null);
+        }
+    }, [applyProfileData, refreshProfileSummaries]);
+
+    useEffect(() => {
+        saveLastSession(profileSnapshot);
+    }, [profileSnapshot]);
+
+    useEffect(() => {
+        saveLastUsedProfile(activeProfileName);
+    }, [activeProfileName]);
+
+    const handleProfileSave = useCallback((name: string): ProfileOperationResult => {
+        const trimmed = name.trim();
+        if (!trimmed) {
+            return { success: false, status: 'error', message: 'Profile name cannot be empty.' };
+        }
+        try {
+            const result = persistProfile(trimmed, profileSnapshot);
+            refreshProfileSummaries();
+            setActiveProfileName(trimmed);
+            return result === 'created'
+                ? { success: true, status: 'success', message: `Saved profile "${trimmed}".` }
+                : { success: true, status: 'info', message: `Updated profile "${trimmed}".` };
+        } catch (error) {
+            console.error('Profile save failed:', error);
+            return { success: false, status: 'error', message: 'Failed to save profile.' };
+        }
+    }, [profileSnapshot, refreshProfileSummaries]);
+
+    const handleProfileLoad = useCallback((name: string): ProfileOperationResult => {
+        const trimmed = name.trim();
+        if (!trimmed) {
+            return { success: false, status: 'error', message: 'Select a profile to load.' };
+        }
+        const stored = loadStoredProfile(trimmed);
+        if (!stored) {
+            return { success: false, status: 'error', message: 'Profile not found.' };
+        }
+        applyProfileData(stored);
+        refreshProfileSummaries();
+        setActiveProfileName(trimmed);
+        return { success: true, status: 'success', message: `Loaded profile "${trimmed}".` };
+    }, [applyProfileData, refreshProfileSummaries]);
+
+    const handleProfileDelete = useCallback((name: string): ProfileOperationResult => {
+        const trimmed = name.trim();
+        if (!trimmed) {
+            return { success: false, status: 'error', message: 'Select a profile to delete.' };
+        }
+        const removed = removeStoredProfile(trimmed);
+        if (!removed) {
+            return { success: false, status: 'error', message: 'Profile not found.' };
+        }
+        refreshProfileSummaries();
+        if (activeProfileName === trimmed) {
+            setActiveProfileName(null);
+        }
+        return { success: true, status: 'info', message: `Deleted profile "${trimmed}".` };
+    }, [refreshProfileSummaries, activeProfileName]);
 
     // --- Derived Matrix Configuration ---
 
@@ -676,8 +1010,12 @@ function App() {
                 } else {
                     previousSampleIndexRef.current.set(vector.id, clampedIndex);
                     dynamicTrailPointsRef.current.delete(vector.id);
-                    const start = Math.max(0, clampedIndex - maxTrail + 1);
-                    currentPath = transform.fullPath.slice(start, clampedIndex + 1);
+                    if (fadingPath) {
+                        const start = Math.max(0, clampedIndex - maxTrail + 1);
+                        currentPath = transform.fullPath.slice(start, clampedIndex + 1);
+                    } else {
+                        currentPath = transform.fullPath.slice(0, clampedIndex + 1);
+                    }
                 }
                 const interpolatedVector = currentPath[currentPath.length - 1] || transform.initial;
                 const previousVector = currentPath.length > 1 ? currentPath[currentPath.length - 2] : transform.initial;
@@ -721,6 +1059,23 @@ function App() {
         if (!matrixEvaluator) return null;
         return matrixEvaluator.getMatrixAt(t, { linearEigenInterpolation });
     }, [matrixEvaluator, t, linearEigenInterpolation]);
+
+    const matrixAtDeterminant = useMemo(() => {
+        if (!matrixAt) return null;
+        try {
+            const detValue = math.det(matrixAt as unknown as number[][]) as unknown;
+            if (typeof detValue === 'number') {
+                return Number.isFinite(detValue) ? detValue : null;
+            }
+            if (detValue && typeof detValue === 'object' && 're' in detValue) {
+                const real = (detValue as { re: number }).re;
+                return Number.isFinite(real) ? real : null;
+            }
+            return null;
+        } catch {
+            return null;
+        }
+    }, [matrixAt]);
 
     const matrixAtEigenvalues = useMemo<Eigenvalue[] | null>(() => {
         if (!matrixEvaluator) return null;
@@ -807,6 +1162,11 @@ function App() {
                 onAddWall={handleAddWall}
                 onUpdateWall={handleUpdateWall}
                 onRemoveWall={handleRemoveWall}
+                profileSummaries={profileSummaries}
+                activeProfileName={activeProfileName}
+                onProfileSave={handleProfileSave}
+                onProfileLoad={handleProfileLoad}
+                onProfileDelete={handleProfileDelete}
                 error={error}
             />
             <div className="flex-grow h-1/2 md:h-full w-full md:w-auto relative pointer-events-none">
@@ -838,6 +1198,7 @@ function App() {
                     eigenvalues={effectiveEigenvalues}
                     eigenvaluesAtT={matrixAtEigenvalues}
                     matrixAt={matrixAt}
+                    determinantAtT={matrixAtDeterminant}
                     vectorV={firstVisibleVector?.value || null}
                     rawTransformedV={rawTransformedV}
                     transformedV={firstVisibleSceneData?.interpolatedVector ? [firstVisibleSceneData.interpolatedVector.x, firstVisibleSceneData.interpolatedVector.y, firstVisibleSceneData.interpolatedVector.z] : null}

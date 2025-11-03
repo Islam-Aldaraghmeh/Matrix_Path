@@ -16,6 +16,7 @@ interface InfoPanelProps {
     eigenvalues: { re: number; im: number }[] | null;
     eigenvaluesAtT: { re: number; im: number }[] | null;
     matrixAt: Matrix3 | null;
+    determinantAtT: number | null;
     vectorV: Vector3 | null;
     rawTransformedV: Vector3 | null;
     transformedV: Vector3 | null;
@@ -77,6 +78,7 @@ const InfoPanel: React.FC<InfoPanelProps> = ({
     eigenvalues,
     eigenvaluesAtT,
     matrixAt,
+    determinantAtT,
     vectorV,
     rawTransformedV,
     transformedV,
@@ -146,6 +148,7 @@ const InfoPanel: React.FC<InfoPanelProps> = ({
             <div className="mb-3">
                 <p className="text-cyan-400">A<sup>t</sup>:</p>
                 <pre className="text-gray-300">{formatMatrix(matrixAt)}</pre>
+                <p className="text-gray-500 mt-1">det(A<sup>t</sup>): {formatDeterminant(determinantAtT)}</p>
             </div>
             <div className="mb-3">
                 <p className="text-cyan-400">v (first visible):</p>

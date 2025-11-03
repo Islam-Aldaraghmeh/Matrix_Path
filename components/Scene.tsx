@@ -5,8 +5,7 @@ import * as THREE from 'three';
 import VectorArrow from './VectorArrow';
 import TracedPath from './TracedPath';
 import VectorDot from './VectorDot';
-import type { Wall } from '../types';
-import type { FadingPathStyle } from '../App';
+import type { Wall, FadingPathStyle } from '../types';
 
 interface SceneObject {
     id: number;

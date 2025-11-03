@@ -1,11 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import type { Matrix3, Vector3, VectorObject, Wall } from '../types';
+import type { Matrix3, Vector3, VectorObject, Wall, FadingPathStyle } from '../types';
 import type { ActivationFunction } from '../utils/activationFunctions';
 import { easingFunctions } from '../utils/easing';
 import { PRESET_MATRICES } from '../App';
 import { PRESET_ACTIVATION_FUNCTIONS } from '../utils/activationFunctions';
-import type { FadingPathStyle } from '../App';
-
+import type { ProfileSummary, ProfileOperationResult } from '../utils/profileStorage';
 
 interface AnimationConfig {
     duration: number;
@@ -72,6 +71,11 @@ interface ControlsPanelProps {
     onAddWall: () => void;
     onUpdateWall: (id: number, updates: Partial<Wall>) => void;
     onRemoveWall: (id: number) => void;
+    profileSummaries: ProfileSummary[];
+    activeProfileName: string | null;
+    onProfileSave: (name: string) => ProfileOperationResult;
+    onProfileLoad: (name: string) => ProfileOperationResult;
+    onProfileDelete: (name: string) => ProfileOperationResult;
     error: string | null;
 }
 
@@ -207,10 +211,29 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
         onAddWall,
         onUpdateWall,
         onRemoveWall,
+        profileSummaries,
+        activeProfileName,
+        onProfileSave,
+        onProfileLoad,
+        onProfileDelete,
         error
     } = props;
     
-    const [activeTab, setActiveTab] = useState<'controls' | 'animation' | 'walls'>('controls');
+    const [activeTab, setActiveTab] = useState<'controls' | 'animation' | 'walls' | 'profiles'>('controls');
+    const [profileNameInput, setProfileNameInput] = useState<string>('');
+    const [profileFeedback, setProfileFeedback] = useState<ProfileOperationResult | null>(null);
+
+    useEffect(() => {
+        if (activeProfileName && profileNameInput.trim().length === 0) {
+            setProfileNameInput(activeProfileName);
+        }
+    }, [activeProfileName, profileNameInput]);
+
+    useEffect(() => {
+        if (!profileFeedback) return;
+        const timeout = window.setTimeout(() => setProfileFeedback(null), 3500);
+        return () => window.clearTimeout(timeout);
+    }, [profileFeedback]);
 
     const handleMatrixValueChange = (row: number, col: number, value: number) => {
         const newMatrix = matrix.map(r => [...r]) as Matrix3;
@@ -256,6 +279,35 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
         onTPrecisionChange(newPrecision);
     };
 
+    const handleProfileSaveClick = () => {
+        const result = onProfileSave(profileNameInput);
+        setProfileFeedback(result);
+        if (result.success) {
+            setProfileNameInput(profileNameInput.trim());
+        }
+    };
+
+    const handleProfileLoadClick = (name: string) => {
+        const result = onProfileLoad(name);
+        setProfileFeedback(result);
+        if (result.success) {
+            setProfileNameInput(name);
+        }
+    };
+
+    const handleProfileDeleteClick = (name: string) => {
+        const result = onProfileDelete(name);
+        setProfileFeedback(result);
+        if (result.success && profileNameInput.trim() === name) {
+            setProfileNameInput('');
+        }
+    };
+
+    const formatTimestamp = (value: number) => {
+        if (!Number.isFinite(value)) return 'unknown';
+        return new Date(value).toLocaleString();
+    };
+
     const getPrecisionSliderValue = (precision: number): number => {
         return Math.max(1, -Math.log10(precision));
     };
@@ -283,6 +335,7 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
                     <TabButton active={activeTab === 'controls'} onClick={() => setActiveTab('controls')}>Controls</TabButton>
                     <TabButton active={activeTab === 'animation'} onClick={() => setActiveTab('animation')}>Config</TabButton>
                     <TabButton active={activeTab === 'walls'} onClick={() => setActiveTab('walls')}>Walls</TabButton>
+                    <TabButton active={activeTab === 'profiles'} onClick={() => setActiveTab('profiles')}>Profiles</TabButton>
                 </nav>
             </div>
 
@@ -755,6 +808,118 @@ const ControlsPanel: React.FC<ControlsPanelProps> = (props) => {
                                     </p>
                                 </div>
                             ))}
+                        </div>
+                    </div>
+                )}
+
+                {activeTab === 'profiles' && (
+                    <div className="space-y-6">
+                        <div className="bg-gray-900/60 rounded-lg p-4 border border-gray-700/60 space-y-4">
+                            <div>
+                                <h2 className="text-lg font-semibold text-gray-200">Save Current Setup</h2>
+                                <p className="text-xs text-gray-400 mt-1">
+                                    Store the full scene configuration so you can reload it later or after a refresh.
+                                </p>
+                                <p className="text-xs text-gray-500 mt-1">
+                                    Your latest changes are auto-saved for the next visit; use named profiles to switch between scenarios instantly.
+                                </p>
+                            </div>
+                            <div>
+                                <label className="text-xs uppercase tracking-wide text-gray-400 block mb-1">
+                                    Profile Name
+                                </label>
+                                <input
+                                    type="text"
+                                    value={profileNameInput}
+                                    onChange={(e) => setProfileNameInput(e.target.value)}
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter') {
+                                            e.preventDefault();
+                                            handleProfileSaveClick();
+                                        }
+                                    }}
+                                    placeholder="e.g. Rotating spiral study"
+                                    className="w-full bg-gray-700 text-white rounded p-2 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                                />
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                                <button
+                                    onClick={handleProfileSaveClick}
+                                    className="flex-1 min-w-[120px] bg-cyan-600 hover:bg-cyan-500 text-white text-sm font-semibold py-2 rounded transition-colors"
+                                >
+                                    Save Profile
+                                </button>
+                                <button
+                                    onClick={() => setProfileNameInput('')}
+                                    className="px-3 py-2 text-sm bg-gray-700 hover:bg-gray-600 text-gray-200 rounded transition-colors"
+                                >
+                                    Clear Name
+                                </button>
+                            </div>
+                            {activeProfileName && (
+                                <p className="text-xs text-gray-400">
+                                    Active profile: <span className="text-cyan-300">{activeProfileName}</span>
+                                </p>
+                            )}
+                        </div>
+
+                        {profileFeedback && (
+                            <div
+                                className={`text-sm rounded-md border px-3 py-2 ${
+                                    profileFeedback.status === 'success'
+                                        ? 'border-cyan-500/60 text-cyan-300 bg-cyan-900/10'
+                                        : profileFeedback.status === 'info'
+                                            ? 'border-blue-500/60 text-blue-300 bg-blue-900/10'
+                                            : 'border-red-500/60 text-red-300 bg-red-900/20'
+                                }`}
+                            >
+                                {profileFeedback.message}
+                            </div>
+                        )}
+
+                        <div>
+                            <div className="flex items-center justify-between mb-2">
+                                <h2 className="text-lg font-semibold text-gray-200">Saved Profiles</h2>
+                                <span className="text-xs text-gray-500">{profileSummaries.length} total</span>
+                            </div>
+                            {profileSummaries.length === 0 ? (
+                                <p className="text-sm text-gray-400 bg-gray-900/40 border border-gray-700 rounded-lg p-4">
+                                    No profiles yet. Save one above and it will appear here.
+                                </p>
+                            ) : (
+                                <div className="space-y-3">
+                                    {profileSummaries.map(profile => {
+                                        const isActive = activeProfileName === profile.name;
+                                        return (
+                                            <div
+                                                key={profile.name}
+                                                className={`bg-gray-900/50 border rounded-lg p-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 ${
+                                                    isActive ? 'border-cyan-500/60' : 'border-gray-800'
+                                                }`}
+                                            >
+                                                <div>
+                                                    <p className="text-sm font-semibold text-gray-100">{profile.name}</p>
+                                                    <p className="text-xs text-gray-400">Updated {formatTimestamp(profile.updatedAt)}</p>
+                                                </div>
+                                                <div className="flex gap-2">
+                                                    <button
+                                                        onClick={() => handleProfileLoadClick(profile.name)}
+                                                        className="px-3 py-1.5 text-xs font-semibold rounded bg-cyan-600 hover:bg-cyan-500 text-white transition-colors"
+                                                    >
+                                                        Load
+                                                    </button>
+                                                    <button
+                                                        onClick={() => handleProfileDeleteClick(profile.name)}
+                                                        className="px-3 py-1.5 text-xs font-semibold rounded bg-gray-700 hover:bg-red-500 text-gray-200 transition-colors"
+                                                    >
+                                                        Delete
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
                         </div>
                     </div>
                 )}

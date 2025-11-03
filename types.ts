@@ -20,3 +20,5 @@ export interface Wall {
   axis: WallAxis;
   position: number;
 }
+
+export type FadingPathStyle = 'smooth' | 'dots';
